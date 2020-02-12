@@ -1,0 +1,177 @@
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import cv2
+import glob
+import scipy
+from scipy.fftpack import dct
+from scipy import stats
+import pywt
+from scipy.stats import ortho_group
+from scipy.sparse import random
+from scipy import stats
+import scipy.linalg
+
+def SNR(input, reference):
+    """
+    returns the SNR from input to reference in dB
+    """
+    noise = input - reference
+    return 10 * np.log10( np.sum(reference**2) / np.sum(noise**2) )
+
+noisy_im = np.load(r'C:\Users\james\Desktop\New folder\Train400 noise3\1.npy')# the noise image with sigma 25
+img2 = cv2.imread(r'C:\Users\james\Desktop\New folder\Train400\test_001.png') # the ground truth image
+img3 = np.load(r'C:\Users\james\Desktop\New folder\2.npy') # denoised image from the residue network
+
+ground_truth = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float)# change the image the np float type
+
+print(img3.shape)
+
+#W = dct(np.eye(64), axis=0)
+#W = ortho_group.rvs(dim=64)
+print(SNR(img3,ground_truth))
+
+
+def im2col(mtx, block_size): # function to change image to column with stride size 1
+    mtx_shape = mtx.shape
+    sx = mtx_shape[0] - block_size[0] + 1
+    sy = mtx_shape[1] - block_size[1] + 1
+
+    result = np.empty((block_size[0] * block_size[1], sx * sy))
+
+    for i in range(sy):
+        for j in range(sx):
+            result[:, i * sx + j] = mtx[j:j + block_size[0], i:i + block_size[1]].ravel(order='F')
+    return result
+
+
+def col2im(mtx, image_size, block_size): # function change coloumn back to image
+    p, q = block_size
+    sx = image_size[0] - p + 1
+    sy = image_size[1] - q + 1
+    result = np.zeros(image_size)
+    weight = np.zeros(image_size)
+    col = 0
+
+    for i in range(sy):
+        for j in range(sx):
+            result[j:j + p, i:i + q] += mtx[:, col].reshape(block_size, order='F')
+            weight[j:j + p, i:i + q] += np.ones(block_size)
+            col += 1
+    return result / weight
+
+
+def DCT(n):
+    """
+    #function to produce the DCT matrix
+    """
+    phi = scipy.fftpack.dct(np.eye(n), norm='ortho')
+    DCT = np.outer(phi.transpose(), phi.transpose()).reshape(
+    (n, n, n, n)).transpose(
+        (0, 2, 1, 3)).reshape(n**2, n, n)
+    DCT = DCT.reshape(n**2, n**2)
+    return DCT
+
+W = DCT(8) # W is the dct matrix
+
+Y = noisy_im
+
+plt.imshow(Y)
+plt.show()
+
+
+Y = im2col(Y, (8, 8))# change signal Y to column
+print(Y.shape)
+mean = np.mean(Y, axis=0)
+mean = mean.reshape(29929,1)
+#Y = Y - np.matmul(np.ones((64,1)),mean.T)
+
+
+
+
+numiter = 20
+L2 = 5 # penalty coefficient
+L3 = 5 # penalty coefficient
+#U,S,V = np.linalg.svd(np.matmul(Y,Y.T)+ (L3*np.eye(64)))
+#smat = np.diag(S)
+#print(smat.shape)
+
+A = np.matmul(Y,Y.T)+ (L3*np.eye(64)) # it refer to the  Y*Y.T + L3*I
+L = scipy.linalg.cholesky(A,lower = True) #cholesky decompositon
+
+print(L.shape)
+LL2 = np.linalg.inv(L)
+
+def keep_s_largest(B, s):
+    """
+    keeps the s largest values (in terms of absolute magnitude) in B,
+    sets the rest to zero
+    """
+    Bnew = np.sort(np.absolute(B), axis=0)
+    for i in range(len(B[0])): #
+        for j in range(len(B)):
+          if np.absolute(B[:,i][j])<np.absolute(Bnew[:,i][-s]):
+              B[:,i][j] = 0
+    return B
+
+
+Losses =[] # loss list
+SNRS =[] # SNR list
+for i in range(numiter):
+   X = np.matmul(W, Y)
+   X = keep_s_largest(X,2)
+   #Xk_new[(X + (alpha / 2)) < 0] = (X + alpha / 2)[(X + alpha/2) < 0]
+   #Xk_new[(X - (alpha / 2) > 0] = (X + alpha / 2)[(X - alpha/2) > 0]
+
+   #print(np.count_nonzero(Xk_new))
+   Q1,Si,R = np.linalg.svd(np.matmul(LL2, np.matmul(Y,X.T)))
+
+   gamm = (1/2)*(Si+ np.sqrt(np.square(Si)+2*L2))
+
+   B = np.matmul(R.T, np.matmul(np.diag(gamm),Q1.T))
+   W = np.matmul(B,LL2)
+
+   Loss = np.linalg.norm((np.matmul(W, Y)) - X)- L2 * np.log(np.absolute(np.linalg.det(W))) + L3 * np.linalg.norm(W)
+   Losses.append(Loss)
+   img_new = np.matmul(np.linalg.inv(W), X)
+   img_new = col2im(img_new, (180, 180), (8, 8))
+   #img_new = img3 + img_new
+   #SNRS.append(SNR(img_new,ground_truth))
+   #print(Loss,SNR(img_new,ground_truth))
+   print(Loss)
+
+
+
+img_new = np.matmul(np.linalg.inv(W),X)
+
+img_new = col2im(img_new, (180, 180), (8, 8))
+img_new1 = img3 + img_new
+print('Snr of new',SNR(img_new1, ground_truth))
+print('Snr of noise',SNR(noisy_im,ground_truth))
+#print('Snr of denoisd form rd',SNR(img3,ground_truth))
+
+
+fig = plt.figure()
+fig.add_subplot(221)
+plt.title('SNR')
+plt.imshow(img_new)
+
+
+fig.add_subplot(222)
+plt.title('Loss')
+plt.plot(Losses)
+
+
+fig.add_subplot(223)
+plt.title(' img_new')
+plt.set_cmap('gray')
+plt.imshow(img_new)
+
+
+fig.add_subplot(224)
+plt.title(' img_noisy')
+plt.imshow(noisy_im)
+plt.set_cmap('gray')
+path = r"C:\Users\james\Desktop\New folder"
+np.save(os.path.join(path, str(3)+ '.npy'),img_new)
+plt.show()
