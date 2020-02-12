@@ -1,0 +1,166 @@
+import cv2
+import os
+import os.path
+import glob
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+#img = np.load(r'C:\Users\james\Desktop\New folder\Train400 noise3\1.npy')
+#img2 = cv2.imread(r'C:\Users\james\Desktop\New folder\Train400\test_001.png')
+#noisy_im = img
+#ground_truth = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY).astype(np.float)
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != self.expansion * out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, self.expansion * out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * out_channels)
+            )
+# torch.Size[1,512,45,45] 1 is batch size, 512 out channel, 45 is row and 45 is column
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+class BasicBlockBack(nn.Module):
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(BasicBlockBack, self).__init__()
+        self.conv1 = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != self.expansion * out_channels:
+            self.shortcut = nn.Sequential(
+                nn.ConvTranspose2d(in_channels, self.expansion * out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.expansion * out_channels)
+            )
+# torch.Size[1,512,45,45] 1 is batch size, 512 out channel, 45 is row and 45 is column
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        out = F.relu(out)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, num_blocks, num_classes=10):
+        super(ResNet, self).__init__()
+        self.in_planes = 64
+
+        self.conv1 = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=1)
+        self.layer3 = self._make_dev_layer(block, 64, num_blocks[2], stride=1)
+        self.layer4 = self._make_dev_layer(block, 1, num_blocks[3], stride=1)
+
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(BasicBlock(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+    def _make_dev_layer(self, block,planes,num_blocks,stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for stride in strides:
+            layers.append(BasicBlockBack(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+
+        return out
+
+def ResNet18():
+    return ResNet(BasicBlock, [2, 2, 2, 2])
+
+net =ResNet18()
+net = net.to(device)
+clean_images = glob.glob(os.path.join(r"C:\Users\james\Desktop\New folder\Train400", '*.png'))
+clean_images.sort()
+noisy_images = glob.glob(os.path.join(r"C:\Users\james\Desktop\New folder\Train400 noise3", '*.npy'))
+noisy_images.sort()
+optimizer = optim.Adam(net.parameters(), lr=0.01)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,verbose=True)
+loss_fn = nn.MSELoss()
+number_of_epoch =1200
+num_steps =5
+
+for epoch in range(number_of_epoch):
+
+    epoch_loss =0
+
+    for step in range(num_steps):
+        image_ind = step % 5
+
+        noisy_im = np.load(noisy_images[image_ind])
+
+        noisy_im = torch.from_numpy(np.array(noisy_im, dtype=np.float32)).unsqueeze(0).unsqueeze(0)
+        noisy_im = noisy_im.to(device)
+
+        clean_im = cv2.imread(clean_images[image_ind])
+        clean_im = cv2.cvtColor(clean_im, cv2.COLOR_BGR2GRAY).astype(np.float)
+        clean_im = torch.from_numpy(np.array(clean_im, dtype=np.float32)).unsqueeze(0).unsqueeze(0)
+        clean_im = clean_im.to(device)
+        net.train()
+        net.zero_grad()
+        optimizer.zero_grad()
+        denoised_im = net(noisy_im)
+
+        loss = loss_fn(denoised_im, clean_im)
+        epoch_loss += loss
+
+
+        loss.backward()
+        optimizer.step()
+        print(loss)
+    scheduler.step(epoch_loss)
+    if epoch_loss <200:
+        break
+    print("Epoch: ", epoch, ", Loss: ", (epoch_loss / 5))
+
+#path = r"C:\Users\james\Desktop\New folder"
+#torch.save(net.state_dict(), path)
+noisy_im1 = np.load(r'C:\Users\james\Desktop\New folder\Train400 noise3\6.npy')
+noisy_im1 = torch.from_numpy(np.array(noisy_im1, dtype=np.float32)).unsqueeze(0).unsqueeze(0)
+net.eval()
+with torch.no_grad():
+    pred = net(noisy_im1)
+
+pred = pred[0][0]
+pred = pred.detach().numpy()
+
+path = r"C:\Users\james\Desktop\New folder"
+np.save(os.path.join(path, 'pred'+str(4)+ '.npy'),pred)
+plt.imshow(pred)
+plt.show()
